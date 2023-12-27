@@ -3,6 +3,7 @@ import tensorflow as tf
 import math
 import pandas as pd
 import copy
+import os
 
 from numpy import (array, dot, arccos, clip)
 from numpy.linalg import norm
@@ -12,6 +13,21 @@ import hdbscan
 import random
 
 num_classes = 10
+
+def get_files_with_prefix(prefix):
+    # Get the list of all files in the directory
+    all_files = os.listdir('.')
+
+    # Filter files based on the specified prefix
+    filtered_files = [file for file in all_files if file.startswith(prefix)]
+
+    return filtered_files
+
+def upper_tri_values(A):
+    m = A.shape[0]
+    r = np.arange(m)
+    mask = r[:,None] < r
+    return A[mask]
 
 def counts_from_cum(inlist):
     outlist = []

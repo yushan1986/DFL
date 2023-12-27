@@ -22,6 +22,7 @@ from sklearn.metrics.pairwise import pairwise_distances
 
 # load the classes
 from classes import User
+from classes import User_trust
 
 # load user defined functions
 from func import counts_from_cum
@@ -59,7 +60,7 @@ if data_dist == 'BIA':
 
 '''EXPERIMENT PARAMETERS'''
 config_text = 'MNIST_DFL_AV'  # print the conf in the output
-dynamic = 0
+dynamic = 1
 
 '''LEARNING PARAMETERS'''
 n_epochs = 200
@@ -72,10 +73,10 @@ if poisoned_flag == 0:
     poi_user_perc = 0
     fraud_type = 'N'
 else:
-    poi_user_perc = 0.40
+    poi_user_perc = 0.20
     fraud_type = 'R'  # can be R, C or D
     multiple = 0  # can be 1 or 0
-defense_flag = 1  # can be 1 or 0
+defense_flag = 0  # can be 1 or 0
 
 '''DEFINE NETWORK ARCHITECTURE for DFL'''
 no_users = 50
@@ -204,7 +205,7 @@ if poisoned_flag == 1:
         '''RANDOMLY DISTRIBUTED POISONERS'''
         fraud_users = random.sample(list(range(no_users)), int(poi_user_perc * no_users))
 
-        #fraud_users = [1]  # manual insert
+        fraud_users = list(range(int(no_users * poi_user_perc)))  # manual insert
         fraud_users.sort()
         fraud_users_cnt = len(fraud_users)
 
@@ -255,7 +256,9 @@ else:
 
 ''''MAIN PROGRAM STARTS'''
 
-users = [User() for i in range(no_users)]
+coff = np.array([0.76759053, 0.71847479, 0.28215525])
+
+users = [User_trust() for i in range(no_users)]
 central_modal = [tf.Variable(tf.random.truncated_normal([input_features * num_classes, 1], stddev=0.1))]
 
 ##print(central_modal[0])
@@ -315,8 +318,10 @@ for k in range(n_epochs):
     local_updates = []
     local_updates_tr = []
     for i in range(no_users):
-        local_update = central_modal[0] - lr * tf.reshape(users[i].gW1, [input_features * num_classes, 1])
+        local_update = tf.reshape(users[i].W1, [7840, 1]) - lr * tf.reshape(users[i].gW1, [input_features * num_classes, 1])
         local_updates.append(local_update.numpy())
+        users[i].tempW1.assign(tf.reshape(local_update, [784, 10]))
+        users[i].tempW1vec.assign(tf.reshape(local_update, [1, 7840]))
         a = tf.transpose(local_update)
         local_updates_tr.append(a[0].numpy())
 
@@ -325,66 +330,49 @@ for k in range(n_epochs):
 
     if defense_flag == 1:
 
-
-        #network_averages, net_selected_counts, net_id = novel_defense_device_layer(local_updates, no_users, l2_dist_users)
-        #l0_avg = novel_defense_top_layer(network_averages, net_selected_counts, central_modal)
-
-        #central_modal[0] = l0_avg.astype(np.float32)
-        # print('THIS WILL NOT HAPPEN')
-
-        # do the testing
-
         next_models = []
         for i in range(no_users):
 
-            # the method should differ from a fraud user and a benign user
-
             # print('CHECKING DEFENSE')
-            neighbour_indexes = np.where(graph[k][i, :] == 1)[0]
-            temp_user = User()
-            train_acc_temp = []
-            update_subset = []
+            if i in benign_users:
+                if dynamic == 1:
+                    neighbour_indexes = np.where(graph[k][i, :] == 1)[0]
+                else:
+                    neighbour_indexes = np.where(graph[0][i, :] == 1)[0]
 
-            for j in neighbour_indexes:
-                update_subset.append(local_updates_tr[j])
-                temp_user.W1.assign(tf.reshape(local_updates_tr[j], [784, 10]))
-                train_pred_temp = temp_user.neural_net(batch_x[i])
-                train_acc_temp.append(accuracy(train_pred_temp, batch_y[i]))
-            own_index = np.where(neighbour_indexes == i)[0][0]
-            own_acc = tf.get_static_value(train_acc_temp[own_index])
-            higher_acc_indexes = np.where(np.array(train_acc_temp) >= own_acc)[0].tolist()
-            filtered_updates = [update_subset[i] for i in higher_acc_indexes]
+                users[i].neighbours = neighbour_indexes
+                update_subset = [local_updates_tr[p] for p in neighbour_indexes.tolist()]
+                users[i].neighbourUpdates = update_subset
 
+                cs_sims, euc_dists = users[i].sim_dis_calc(update_subset)
+                test_scores = users[i].nei_tests(update_subset, batch_x[i], batch_y[i])
 
+                properties = np.vstack((np.array(cs_sims), np.array(euc_dists), np.array(test_scores))).T
+                trust_scores = np.matmul(properties, np.array([0.76759053, 0.71847479, 0.28215525]).T)
+                trust_weights = trust_scores / np.sum(trust_scores)
 
-            next_model = sum(filtered_updates) / len(filtered_updates)
-            next_models.append(next_model)
-        next_models_array = np.asarray(next_models)
+                aggmodel = users[i].create_agg(update_subset, trust_weights)
+                users[i].W1.assign(tf.reshape(aggmodel, [784, 10]))
 
+            else:
+                steps = 1
+                update_array = np.asarray(local_updates_tr)
 
-            #users[i].W1.assign(tf.reshape(next_model, [784, 10]))
-            # do the testing
+                if dynamic == 1:
+                    weights = graph[k] / graph[k].sum(axis=1)[:, None]
+                else:
+                    weights = graph[0] / graph[0].sum(axis=1)[:, None]
+                for i in range(steps):
+                    update_array = np.matmul(weights, update_array)
 
-        # compute accuracy
-
-        # calculate score based oan accuracy
-
-        # the score will be the weights for aggregation
-
-
-
-
-
-
+                for i in fraud_users:
+                    tmp_model = np.reshape(update_array[i], (7840, 1)).astype(np.float32)
+                    users[i].W1.assign(tf.reshape(tmp_model, [784, 10]))
 
     else:
         steps = 1
         update_array = np.asarray(local_updates_tr)
-        #temp_arr = [5, 8, 3, 6, 10, 7]
-        #con = copy.deepcopy(connections)
-        #for j in range(5):
-        #    np.append(connections, con, axis=0)
-        #con_new = np.repeat(connections, 3, axis=1)
+
         if dynamic == 1:
             weights = graph[k] / graph[k].sum(axis=1)[:, None]
         else:
@@ -392,24 +380,10 @@ for k in range(n_epochs):
         for i in range(steps):
             update_array = np.matmul(weights, update_array)
 
-        next_models_array = update_array
-        # averaging the model updates from down to up, layer 0 is the top server
-        #l1_avg, l1_counts = agg_device_layer(local_updates, l2_dist_users)
-        #l0_avg = agg_top_layer(l1_avg, l1_counts)
+        for i in range(no_users):
+            tmp_model = np.reshape(update_array[i], (7840, 1)).astype(np.float32)
+            users[i].W1.assign(tf.reshape(tmp_model, [784, 10]))
 
-        # Update central model
-
-        # because we expect everyone will have the same model after the training
-        # central_modal[0] = np.reshape(update_array[0], (7840,1)).astype(np.float32)
-
-
-
-
-
-    # Send updated model to the users
-    for i in range(no_users):
-        central_modal[0] = np.reshape(next_models_array[i], (7840, 1)).astype(np.float32)
-        users[i].W1.assign(tf.reshape(central_modal[0], [784, 10]))
 
     '''INFERENCE'''
     # we can check with first user as every user has the same model at the inference
@@ -481,7 +455,7 @@ ax.plot(range(n_epochs), acc_test_cls5, 'g-*', label='Tst Acc 5')
 ax.plot(range(n_epochs), acc_test_cls7, 'k-*', label='Tst Acc 7')
 ax.plot(range(n_epochs), acc_test_cls8, 'y-*', label='Tst Acc 8')
 
-legend = ax.legend(loc='lower right', shadow=True, fontsize='x-large')
+#legend = ax.legend(loc='lower right', shadow=True, fontsize='x-large')
 plt.show()
 
 if data_dist == 'BIA':
