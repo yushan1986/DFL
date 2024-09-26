@@ -3,6 +3,16 @@ import tensorflow as tf
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import pairwise_distances
 
+from tensorflow import expand_dims
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, Input, Lambda
+from tensorflow.keras.layers import MaxPooling2D
+from tensorflow.keras.layers import Activation
+from tensorflow.keras.layers import Flatten
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.optimizers import SGD
+from tensorflow.keras import backend as K
+
 class User:
     def __init__(self):
         self.W1 = tf.Variable(tf.random.truncated_normal([784, 10], stddev=0.1))
@@ -129,6 +139,56 @@ class Aggregator:
         self.gW1vec = tf.Variable(tf.zeros(shape=[1, 7840], dtype="float32"))
         self.gW1all = tf.Variable(tf.zeros(shape=[100, 7840], dtype="float32"))  # CHANGE THIS
         self.gW1var = tf.Variable(tf.zeros(shape=[1, 7840], dtype="float32"))
+
+class SimpleMLP_MN:
+    @staticmethod
+    def build(shape, classes):
+        model = Sequential()
+        '''
+        model.add(Dense(200, input_shape=(shape,)))
+        model.add(Activation("relu"))
+        model.add(Dense(200))
+        model.add(Activation("relu"))
+        model.add(Dense(classes))'''
+
+        model.add(Dense(10, input_shape=(shape,)))
+
+        model.add(Activation("softmax"))
+        return model
+
+class SimpleMLP_CF:
+    @staticmethod
+    def build(shape, classes):
+        model = Sequential()
+        model.add(Input(shape=(shape[0], shape[1], shape[2])))
+        #model.add(Lambda(lambda x: expand_dims(x, axis=-1)))
+        model.add(Conv2D(filters=64, kernel_size=3, padding="same"))
+        model.add(Activation("relu"))
+        model.add(Conv2D(filters=64, kernel_size=3, padding="same"))
+        model.add(Activation("relu"))
+        model.add(MaxPooling2D())
+        model.add(Conv2D(filters=128, kernel_size=3, padding="same"))
+        model.add(Activation("relu"))
+        model.add(Conv2D(filters=128, kernel_size=3, padding="same"))
+        model.add(Activation("relu"))
+        model.add(MaxPooling2D())
+        model.add(Activation("relu"))
+        model.add(Conv2D(filters=256, kernel_size=3, padding="same"))
+        model.add(Activation("relu"))
+        model.add(Conv2D(filters=256, kernel_size=3, padding="same"))
+        model.add(Activation("relu"))
+        model.add(MaxPooling2D())
+        model.add(Activation("relu"))
+        model.add(Conv2D(filters=512, kernel_size=3, padding="same"))
+        model.add(Activation("relu"))
+        model.add(Conv2D(filters=512, kernel_size=3, padding="same"))
+        model.add(Activation("relu"))
+        model.add(MaxPooling2D())
+        model.add(Flatten())
+        model.add(Dense(32))
+        model.add(Dense(classes))
+        model.add(Activation("softmax"))
+        return model
 
     '''def neural_net(self, x):
         y1 = tf.matmul(x, self.W1)

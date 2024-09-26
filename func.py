@@ -4,11 +4,13 @@ import math
 import pandas as pd
 import copy
 import os
+import random
 
 from numpy import (array, dot, arccos, clip)
 from numpy.linalg import norm
 from sklearn.metrics import pairwise_distances
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics import accuracy_score
 import hdbscan
 import random
 
@@ -37,6 +39,19 @@ def counts_from_cum(inlist):
         outlist.append(freq)
         item = item + freq
     return outlist
+
+def derangement(n):
+    while True:
+        # Create an array from 0 to n-1
+        array = list(range(n))
+        # Shuffle the array
+        random.shuffle(array)
+        # Check if it's a derangement
+        if all(array[i] != i for i in range(n)):
+            return array
+
+def get_corresponding_value(value, mapping_dict):
+    return mapping_dict.get(value, None)
 
 def mini_batches(X, Y, mb_size):
 
@@ -111,6 +126,32 @@ def accuracy(y_pred, y_true):
     correct_prediction = tf.equal(tf.argmax(y_pred, 1), tf.argmax(y_true, 1))
     return tf.reduce_mean(tf.cast(correct_prediction, tf.float32), axis=-1)
 
+def class_wise_accuracies(confusion_matrix):
+    """
+    Calculate the accuracy for each class from the confusion matrix.
+    Parameters:
+    confusion_matrix (numpy.ndarray): Confusion matrix.
+    Returns:
+    list: List of accuracies for each class.
+    """
+    # Initialize a list to store accuracies for each class
+    accuracies = []
+    # Total number of classes
+    cls_cnt = confusion_matrix.shape[0]
+
+    for i in range(cls_cnt):
+        true_positives = confusion_matrix[i, i]
+        total_samples = np.sum(confusion_matrix[i, :])
+
+        # Calculate accuracy for class i
+        if total_samples > 0:
+            accuracy = true_positives / total_samples
+        else:
+            accuracy = 0.0
+        # Append the accuracy to the list
+        accuracies.append(accuracy)
+
+    return accuracies
 
 # Optimization process.
 def get_gradients(x, y, W1):
@@ -138,19 +179,19 @@ def get_gradients(x, y, W1):
 # sourcelist is the source labels to flip. carefully assign this in case of biased data
 # sourcelist is the list of destination labels
 # perventage is how much of source labels to be flipped
-def label_flip_multiple(indata, userlist, sourcelist, destlist, percentage):
+def label_flip_multiple(indata, userlist, sourcelist, destlist, percentage, num_cls):
     perc = percentage
     fip_item = 0
     for i in userlist:
         inds = np.argmax(indata[i], axis=1)
         indexes = np.where(inds == sourcelist[fip_item])
-        flipdata = tf.keras.utils.to_categorical(destlist[fip_item], num_classes)
+        flipdata = tf.keras.utils.to_categorical(destlist[fip_item], num_cls)
         fip_item = fip_item + 1
         for j in indexes[0]:
             indata[i][j] = flipdata
     return indata
 
-def label_flip_multiple_ind(indata, userlist, sourcelist, destlist, percentage):
+def label_flip_multiple_ind(indata, userlist, sourcelist, destlist, percentage, num_cls):
     perc = percentage
     fip_item = 0
     flipped_indexes = []
@@ -158,11 +199,36 @@ def label_flip_multiple_ind(indata, userlist, sourcelist, destlist, percentage):
         inds = np.argmax(indata[i], axis=1)
         indexes = np.where(inds == sourcelist[fip_item])
         flipped_indexes.append(list(indexes))
-        flipdata = tf.keras.utils.to_categorical(destlist[fip_item], num_classes)
+        flipdata = tf.keras.utils.to_categorical(destlist[fip_item], num_cls)
         fip_item = fip_item + 1
         for j in indexes[0]:
             indata[i][j] = flipdata
     return indata, flipped_indexes
+
+def train_trigger_flip_ind(trig_data, flip_data, target_label, poi_data_perc, fraud_users, num_classes, trigger, loc):
+    triggered_indexes = []
+    for i in fraud_users:
+        inds = np.argmax(flip_data[i], axis=1)
+        indexes = np.where(inds != target_label)
+        selected_indexes = random.sample(list(indexes[0]), int(poi_data_perc * len(indexes[0])))
+        triggered_indexes.append(selected_indexes)
+        flipdata = tf.keras.utils.to_categorical(target_label, num_classes)
+        for j in selected_indexes:
+            np.put(trig_data[i][j], loc, trigger)
+            flip_data[i][j] = flipdata
+    return trig_data, flip_data, triggered_indexes
+
+def test_trigger_ind(trig_data, flip_data, target_label, poi_data_perc):
+    indexes_test = np.where(flip_data != target_label)
+    triggered_indexes_test = random.sample(list(indexes_test[0]), int(poi_data_perc * len(indexes_test[0])))
+    remain_indexes_test = list(np.setdiff1d(list(range(10000)), triggered_indexes_test))
+    triggered_data = trig_data[triggered_indexes_test]
+    triggered_data_labels = flip_data[triggered_indexes_test]
+    remaining_data = trig_data[remain_indexes_test]
+    remaining_data_labels = flip_data[remain_indexes_test]
+    for i in range(len(triggered_data)):
+        np.put(triggered_data[i], [0, 1, 2, 3, 28, 29, 30, 31, 56, 57, 58, 59, 84, 85, 86, 87], [1] * 16)
+    return triggered_data, remaining_data, triggered_data_labels, remaining_data_labels, triggered_indexes_test
 
 def angle(u, v):
     cosine = dot(u, v) / (norm(u) * norm(v))  # -> cosine of the angle
@@ -189,7 +255,7 @@ def pardon(cs_sim, no_users):
     alpha_modified = alpha/np.max(alpha)
     return alpha_modified
 
-def make_biased_data(train_data, no_users, alpha, least_samples):
+def make_biased_data(train_data, no_users, alpha, least_samples, num_cls):
 
     train_data_content = train_data.iloc[:, :-1]
     train_data_labels = train_data.iloc[:, -1]
@@ -201,7 +267,7 @@ def make_biased_data(train_data, no_users, alpha, least_samples):
     dataidx_map = {}
 
     min_size = 0
-    K = num_classes
+    K = num_cls
     N = len(train_data_labels)
 
     cnt = 0
@@ -248,7 +314,7 @@ def make_biased_data(train_data, no_users, alpha, least_samples):
     for i in range(no_users):
         X[i] = X[i].to_numpy()
         Y[i] = Y[i].to_numpy()
-        Y[i] = tf.keras.utils.to_categorical(Y[i], num_classes)
+        Y[i] = tf.keras.utils.to_categorical(Y[i], K)
 
     return X, Y, count_ones # X and y are list of numpy arrays. y in categorical form
 
@@ -279,6 +345,38 @@ def make_iid_data(train_ordered, no_users, input_features, num_cls):
             Y[j] = np.append(Y[j], tf.keras.utils.to_categorical(ysplits[j], num_cls), axis=0)
     return X, Y  # X and Y are list of numpy arrays. Y in categorical form
 
+def make_random_data_cifar(xdata, ydata, no_users):
+    # Distribute data randomly to each client. Ultimately the workers have randomly distributed data
+    # Output is a list containing one numpy array for each user
+    data_count = len(ydata)
+    inds = np.arange(data_count)
+    np.random.shuffle(inds)
+    x = np.split(inds, no_users, axis=0)
+
+    X = []
+    Y = []
+    for i in range(no_users):
+        X.append(np.take(xdata, x[i], axis=0))
+        Y.append(np.take(ydata, x[i], axis=0))
+    return X, Y  # X and Y are list of numpy arrays. Y not in categorical form
+
+def make_iid_data_cifar(x_ordered, y_ordered, no_users):
+    # Distribute the data from each class to its respective clients. Ultimately the workers have IID train data
+    # Output is a list containing one numpy array for each user
+    num_cls = 10
+    X = [[] for i in range(no_users)]
+    Y = [[] for i in range(no_users)]
+    for i in range(no_users):
+        X[i] = np.empty((0, 32, 32, 3), dtype=float)
+        Y[i] = np.empty((0, 1), dtype=float)
+
+    for i in range(num_cls):
+        xsplits = np.array_split(x_ordered[i], no_users)
+        ysplits = np.array_split(y_ordered[i], no_users)
+        for j in range(no_users):
+            X[j] = np.append(X[j], xsplits[j], axis=0)
+            Y[j] = np.append(Y[j], ysplits[j], axis=0)
+    return X, Y  # X and Y are list of numpy arrays. Y not in categorical form
 
 '''AGGREGATION FUNCTIONS'''
 
@@ -796,4 +894,62 @@ def novel_defense_int_layer(lower_layer_updates, net_selected_counts, int_dist_m
 
 
 
+def sum_scaled_weights(scaled_weight_list):
+    '''Return the sum of the listed scaled weights. The is equivalent to scaled avg of the weights'''
+    avg_grad = list()
+    # get the average grad accross all client gradients
+    for grad_list_tuple in zip(*scaled_weight_list):
+        layer_mean = tf.math.reduce_sum(grad_list_tuple, axis=0)
+        avg_grad.append(layer_mean)
 
+    return avg_grad
+
+
+def test_model(X_test, Y_test, model, comm_round):
+    cce = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
+    # logits = model.predict(X_test, batch_size=100)
+    logits = model.predict(X_test)
+    loss = cce(Y_test, logits)
+    acc = accuracy_score(tf.argmax(logits, axis=1), tf.argmax(Y_test, axis=1))
+    print('comm_round: {} | global_acc: {:.3%} | global_loss: {}'.format(comm_round, acc, loss))
+    return acc, loss
+
+
+def test_model_new(X_test, Y_test, model, comm_round):
+    cce = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
+    # logits = model.predict(X_test, batch_size=100)
+    logits = model.predict(X_test)
+    loss = cce(Y_test, logits)
+    acc = accuracy_score(tf.argmax(logits, axis=1), tf.argmax(Y_test, axis=1))
+    print('comm_round: {} | global_acc: {:.3%} | global_loss: {}'.format(comm_round, acc, loss))
+    return acc, loss, logits
+
+def scale_model_weights(weight, scalar):
+    '''function for scaling a models weights'''
+    weight_final = []
+    steps = len(weight)
+    for i in range(steps):
+        weight_final.append(scalar * weight[i])
+    return weight_final
+
+
+
+
+# KDD: Encode a numeric column as zscores (standard) or normalized data
+def encode_numeric_zscore(df, name, mean=None, sd=None):
+    if mean is None:
+        mean = df[name].mean()
+
+    if sd is None:
+        sd = df[name].std()
+
+    df[name] = (df[name] - mean) / sd
+    #df[name] = (df[name] - df[name].min()) / (df[name].max() -df[name].min())
+
+# KDD: Encode text values to dummy variables(i.e. [1,0,0], [0,1,0],[0,0,1] for red,green,blue)
+def encode_text_dummy(df, name):
+    dummies = pd.get_dummies(df[name])
+    for x in dummies.columns:
+        dummy_name = f"{name}-{x}"
+        df[dummy_name] = dummies[x]
+    df.drop(name, axis=1, inplace=True)
